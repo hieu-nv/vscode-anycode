@@ -18,6 +18,7 @@ import { SelectionRangesProvider } from './features/selectionRanges';
 import { SymbolInfoStorage, SymbolIndex } from './features/symbolIndex';
 import { Validation } from './features/validation';
 import { WorkspaceSymbol } from './features/workspaceSymbols';
+import { SemanticTokensProvider } from './features/semanticTokens';
 import Languages from './languages';
 import { Trees } from './trees';
 
@@ -36,7 +37,6 @@ export function startServer(connection: Connection, factory: IStorageFactory) {
 	const features: { register(connection: Connection): any }[] = [];
 
 	connection.onInitialize(async (params: InitializeParams): Promise<InitializeResult> => {
-
 		const initData = <InitOptions><unknown>params.initializationOptions;
 
 		// init tree sitter and languages before doing anything else
@@ -64,6 +64,10 @@ export function startServer(connection: Connection, factory: IStorageFactory) {
 		connection.onExit(() => factory.destroy(symbolStorage));
 
 		const symbolIndex = new SymbolIndex(trees, documents, symbolStorage);
+		symbolIndex.onProgress = (done, total) => {
+			connection.sendNotification(CustomMessages.QueueProgress, { done, total });
+		};
+
 
 		features.push(new WorkspaceSymbol(documents, trees, symbolIndex));
 		features.push(new DefinitionProvider(documents, trees, symbolIndex));
@@ -73,6 +77,7 @@ export function startServer(connection: Connection, factory: IStorageFactory) {
 		features.push(new DocumentSymbols(documents, trees));
 		features.push(new SelectionRangesProvider(documents, trees));
 		features.push(new FoldingRangeProvider(documents, trees));
+		features.push(new SemanticTokensProvider(documents, trees));
 		new Validation(connection, documents, trees);
 
 		// manage symbol index. add/remove files as they are disovered and edited
@@ -80,15 +85,15 @@ export function startServer(connection: Connection, factory: IStorageFactory) {
 		documents.onDidOpen(event => symbolIndex.addFile(event.document.uri));
 		documents.onDidChangeContent(event => symbolIndex.addFile(event.document.uri));
 
-		connection.onRequest(CustomMessages.QueueInit, uris => {
+		connection.onRequest(CustomMessages.QueueInit, async (uris: string[]) => {
 			symbolIndex.initFiles(uris);
+			await symbolIndex.update();
 		});
 
 		connection.onRequest(CustomMessages.QueueUnleash, async (arg: [LanguageInfo, LanguageData]) => {
 			const [info, data] = arg;
-			console.log(`[index] unleashed files matching: ${info.languageId}`);
 			Languages.setLanguageData(info.languageId, data);
-			symbolIndex.unleashFiles(info.suffixes);
+			await symbolIndex.unleashFiles(info.suffixes);
 		});
 
 		connection.onDidChangeWatchedFiles(e => {

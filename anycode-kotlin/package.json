@@ -36,7 +36,10 @@
 			"queryPaths": {
 				"comments": "./queries/comments.scm",
 				"folding": "./queries/folding.scm",
+				"highlights": "./queries/highlights.scm",
 				"identifiers": "./queries/identifiers.scm",
+				"locals": "./queries/locals.scm",
+				"outline": "./queries/outline.scm",
 				"references": "./queries/references.scm"
 			}
 		}

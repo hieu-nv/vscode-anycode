@@ -7,6 +7,7 @@
 export interface Queries {
 	readonly comments?: string;
 	readonly folding?: string;
+	readonly highlights?: string;
 	readonly identifiers?: string;
 	readonly locals?: string;
 	readonly outline?: string;
@@ -54,6 +55,7 @@ export interface FeatureConfig {
 	folding?: boolean;
 	workspaceSymbols?: boolean;
 	diagnostics?: boolean;
+	syntaxHighlights?: boolean;
 };
 
 export type LanguageConfiguration = [LanguageInfo, FeatureConfig][];

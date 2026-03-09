@@ -10,6 +10,7 @@ import { Queries, LanguageInfo, FeatureConfig, LanguageData, Language } from '..
 type JSONQueryPaths = {
 	comments?: string;
 	folding?: string;
+	highlights?: string;
 	identifiers?: string;
 	locals?: string;
 	outline?: string;
@@ -170,6 +171,9 @@ export class SupportedLanguages {
 		}
 		if (paths.folding) {
 			result.folding = decoder.decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri, paths.folding)));
+		}
+		if (paths.highlights) {
+			result.highlights = decoder.decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri, paths.highlights)));
 		}
 		if (paths.identifiers) {
 			result.identifiers = decoder.decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri, paths.identifiers)));

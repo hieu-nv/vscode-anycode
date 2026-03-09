@@ -8,3 +8,6 @@ tree-sitter-*.wasm
 */server/src/test/**/*.js
 **/test-fixture/**/*.js
 !**/test-fixture/test.js
+tsconfig.browser.tsbuildinfo
+tsconfig.node.tsbuildinfo
+.agent/

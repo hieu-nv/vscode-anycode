@@ -16,6 +16,10 @@ class Queue {
 
 	private readonly _queue = new Set<string>();
 
+	get size() {
+		return this._queue.size;
+	}
+
 	enqueue(uri: string): void {
 		if (isInteresting(uri) && !this._queue.has(uri)) {
 			this._queue.add(uri);
@@ -185,13 +189,28 @@ export class SymbolIndex {
 		return this._currentUpdate;
 	}
 
-	private async _doUpdate(uris: string[], async: boolean): Promise<void> {
+	onProgress?: (done: number, total: number) => void;
+
+	private async _doUpdate(uris: string[], async: boolean, totalOverride?: number, doneOffsetOverride?: number): Promise<void> {
 		if (uris.length !== 0) {
 
 			// schedule a new task to update the cache for changed uris
 			const sw = new StopWatch();
 			const tasks = uris.map(this._createIndexTask, this);
-			const stats = await parallel(tasks, 50, new lsp.CancellationTokenSource().token);
+
+			let done = doneOffsetOverride ?? 0;
+			const total = totalOverride ?? uris.length;
+			this.onProgress?.(done, total);
+			const wrappedTasks = tasks.map(task => {
+				return async (token: lsp.CancellationToken) => {
+					const result = await (task as (token: lsp.CancellationToken) => Promise<any>)(token);
+					done++;
+					this.onProgress?.(done, total);
+					return result;
+				};
+			});
+
+			const stats = await parallel(wrappedTasks, 50, new lsp.CancellationTokenSource().token);
 
 			let totalRetrieve = 0;
 			let totalIndex = 0;
@@ -206,10 +225,12 @@ export class SymbolIndex {
 
 	private _createIndexTask(uri: string): () => Promise<{ durationRetrieve: number, durationIndex: number }> {
 		return async () => {
+			console.log(`[server] task start: ${uri}`);
 			// fetch document
 			const _t1Retrieve = performance.now();
 			const document = await this._documents.retrieve(uri);
 			const durationRetrieve = performance.now() - _t1Retrieve;
+			console.log(`[server] task retrieved: ${uri} (${Math.round(durationRetrieve)}ms)`);
 
 			// remove current data
 			this.index.delete(uri);
@@ -218,6 +239,7 @@ export class SymbolIndex {
 			const _t1Index = performance.now();
 			try {
 				await this._doIndex(document);
+				console.log(`[server] task indexed: ${uri}`);
 			} catch (e) {
 				console.log(`FAILED to index ${uri}`, e);
 			}
@@ -301,13 +323,17 @@ export class SymbolIndex {
 		await this.update();
 
 		// async update all files that were taken from cache
+		const total = this._asyncQueue.size;
+		let done = 0;
+
 		const asyncUpdate = async () => {
 			const uris = this._asyncQueue.consume(70, uri => this._suffixFilter.accept(uri));
 			if (uris.length === 0) {
 				return;
 			}
 			const t1 = performance.now();
-			await this._doUpdate(uris, true);
+			await this._doUpdate(uris, true, total, done);
+			done += uris.length;
 			setTimeout(() => asyncUpdate(), (performance.now() - t1) * 4);
 		};
 		asyncUpdate();

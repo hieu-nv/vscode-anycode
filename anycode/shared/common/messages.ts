@@ -3,8 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-export const enum CustomMessages {
+export enum CustomMessages {
 	QueueInit = 'queue/init',
 	QueueUnleash = 'queue/unleash',
+	QueueProgress = 'queue/progress',
 	FileRead = 'file/read',
 }

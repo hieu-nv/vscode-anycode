@@ -6,7 +6,16 @@
 	"configurations": [
 		{
 			"args": [
-				"--extensionDevelopmentPath=${workspaceFolder}/anycode"
+				"--extensionDevelopmentPath=${workspaceFolder}/anycode",
+				"--extensionDevelopmentPath=${workspaceFolder}/anycode-c-sharp",
+				"--extensionDevelopmentPath=${workspaceFolder}/anycode-cpp",
+				"--extensionDevelopmentPath=${workspaceFolder}/anycode-go",
+				"--extensionDevelopmentPath=${workspaceFolder}/anycode-java",
+				"--extensionDevelopmentPath=${workspaceFolder}/anycode-kotlin",
+				"--extensionDevelopmentPath=${workspaceFolder}/anycode-php",
+				"--extensionDevelopmentPath=${workspaceFolder}/anycode-python",
+				"--extensionDevelopmentPath=${workspaceFolder}/anycode-rust",
+				"--extensionDevelopmentPath=${workspaceFolder}/anycode-typescript"
 			],
 			"name": "Launch Extension",
 			"preLaunchTask": "npm: watch",

@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import { LanguageClientOptions, RevealOutputChannelOn } from 'vscode-languageclient';
 import { CommonLanguageClient } from 'vscode-languageclient';
 import { SupportedLanguages } from './supportedLanguages';
-import TelemetryReporter from '@vscode/extension-telemetry';
+import { TelemetryReporter } from '@vscode/extension-telemetry';
 import type { InitOptions, Language } from '../../../shared/common/initOptions';
 import { CustomMessages } from '../../../shared/common/messages';
 
@@ -18,10 +18,12 @@ export interface LanguageClientFactory {
 
 
 const _statusItem = vscode.languages.createLanguageStatusItem('info', []);
+const _statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+_statusBarItem.name = 'anycode indexing';
 
 export async function startClient(factory: LanguageClientFactory, context: vscode.ExtensionContext) {
-
 	const channel = vscode.window.createOutputChannel('anycode');
+	channel.appendLine('[anycode] starting client');
 	const reporter = new TelemetryReporter(context.extension.packageJSON['aiKey']);
 	const sender: vscode.TelemetrySender = {
 		sendEventData(event, data) {
@@ -39,10 +41,12 @@ export async function startClient(factory: LanguageClientFactory, context: vscod
 	startServer();
 
 	function startServer() {
+		channel.appendLine('[anycode] startServer()');
 		serverHandles.push(_startServer(factory, context, supportedLanguages, telemetry, channel));
 	}
 
 	async function stopServers() {
+		channel.appendLine('[anycode] stopServers()');
 		const oldHandles = serverHandles.slice(0);
 		serverHandles = [];
 		const result = await Promise.allSettled(oldHandles);
@@ -55,6 +59,7 @@ export async function startClient(factory: LanguageClientFactory, context: vscod
 
 	context.subscriptions.push(channel);
 	context.subscriptions.push(_statusItem);
+	context.subscriptions.push(_statusBarItem);
 	context.subscriptions.push(supportedLanguages);
 	context.subscriptions.push(supportedLanguages.onDidChange(async () => {
 		// restart server when supported languages change
@@ -69,6 +74,7 @@ export async function startClient(factory: LanguageClientFactory, context: vscod
 function _updateStatusAndInfo(selector: vscode.DocumentSelector, showCommandHint: boolean): void {
 
 	_statusItem.selector = selector;
+	_statusItem.busy = false;
 	_statusItem.severity = vscode.LanguageStatusSeverity.Warning;
 	_statusItem.text = `Partial Mode`;
 	if (showCommandHint) {
@@ -89,11 +95,17 @@ async function _startServer(factory: LanguageClientFactory, context: vscode.Exte
 
 	const supportedLanguages = await supportedLanguagesInfo.getSupportedLanguages();
 	const documentSelector = await supportedLanguagesInfo.getSupportedLanguagesAsSelector();
+	log.appendLine(`[anycode] _startServer: found ${supportedLanguages.size} supported languages, selector length: ${documentSelector.length}`);
 	if (documentSelector.length === 0) {
 		log.appendLine('[anycode] NO supported languages, no server needed');
 		// no supported languages -> nothing to do
 		return new vscode.Disposable(() => { });
 	}
+
+	_statusItem.selector = documentSelector;
+	_statusItem.text = '$(sync~spin) anycode loading...';
+	_statusItem.busy = true;
+	_statusItem.severity = vscode.LanguageStatusSeverity.Information;
 
 	function _sendFeatureTelementry(name: string, language: string) {
 		/* __GDPR__
@@ -155,16 +167,47 @@ async function _startServer(factory: LanguageClientFactory, context: vscode.Exte
 			provideCompletionItem(document, position, context, token, next) {
 				_sendFeatureTelementry('completions', document.languageId);
 				return next(document, position, context, token);
+			},
+			provideDocumentSemanticTokens(document, token, next) {
+				_sendFeatureTelementry('semanticTokens', document.languageId);
+				return next(document, token);
 			}
 		}
 	};
 
 	const client = factory.createLanguageClient('anycode', 'anycode', clientOptions);
 
+	let currentIndexingPhase: string | undefined;
+	let _currentProgress: { reporter: vscode.Progress<{ message?: string, increment?: number }>, lastDone: number } | undefined;
+	let _activeIndexingCount = 0;
+
 	disposables.push(client.start());
 	disposables.push(new vscode.Disposable(() => factory.destoryLanguageClient(client)));
 
 	await client.onReady();
+
+	client.onNotification(CustomMessages.QueueProgress, (progress: { done: number, total: number }) => {
+		const phase = currentIndexingPhase ?? 'anycode';
+		_statusItem.text = `$(sync~spin) indexing (${progress.done}/${progress.total}) '${phase}'...`;
+
+		log.appendLine(`[anycode] index progress: ${progress.done}/${progress.total} (${phase})`);
+
+		if (_activeIndexingCount > 0 || progress.done < progress.total) {
+			_statusBarItem.text = `$(sync~spin) anycode indexing: ${progress.done}/${progress.total}`;
+			_statusBarItem.show();
+		} else {
+			_statusBarItem.hide();
+		}
+
+		if (_currentProgress) {
+			const increment = progress.total > 0 ? ((progress.done - _currentProgress.lastDone) / progress.total) * 100 : 0;
+			_currentProgress.reporter.report({
+				message: `${progress.done}/${progress.total}`,
+				increment
+			});
+			_currentProgress.lastDone = progress.done;
+		}
+	});
 
 
 	// file discover and watching. in addition to text documents we annouce and provide
@@ -181,64 +224,101 @@ async function _startServer(factory: LanguageClientFactory, context: vscode.Exte
 	const init = Promise.resolve(vscode.workspace.findFiles(langPattern, exclude, /*unlimited to count the number of files*/).then(async all => {
 
 		let hasWorkspaceContents = 0;
-		if (all.length > 50) {
-			// we have quite some files. let's check if we can read them without limits.
-			// for remotehub this means try to fetch the repo-tar first
-			if (await _canInitWithoutLimits()) {
-				size = Number.MAX_SAFE_INTEGER;
-				hasWorkspaceContents = 1;
+		try {
+			if (all.length > 50) {
+				// we have quite some files. let's check if we can read them without limits.
+				// for remotehub this means try to fetch the repo-tar first
+				if (await _canInitWithoutLimits()) {
+					size = Number.MAX_SAFE_INTEGER;
+					hasWorkspaceContents = 1;
+				}
 			}
+
+			const uris = all.slice(0, size);
+			log.appendLine(`[INDEX] using ${uris.length} of ${all.length} files for ${langPattern}`);
+
+			const t1 = performance.now();
+			log.appendLine(`[anycode] sending InitRequest for ${uris.length} files`);
+			currentIndexingPhase = 'initial';
+			_activeIndexingCount++;
+			_statusBarItem.text = `$(sync~spin) anycode indexing workspace...`;
+			_statusBarItem.show();
+			const initReq = client.sendRequest(CustomMessages.QueueInit, uris.map(String));
+			await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Indexing Workspace...' }, (progress) => {
+				_currentProgress = { reporter: progress, lastDone: 0 };
+				return initReq;
+			});
+			/* __GDPR__
+				"init" : {
+					"numOfFiles" : { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true },
+					"indexSize" : { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true },
+					"hasWorkspaceContents" : { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true },
+					"duration" : { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true }
+				}
+			*/
+			telemetry.logUsage('init', {
+				numOfFiles: all.length, // number of files found
+				indexSize: uris.length, // number of files loaded
+				hasWorkspaceContents, // firehose access?
+				duration: performance.now() - t1,
+			});
+
+			// incremental indexing: per language we wait for the first document to appear
+			// and only then we starting indexing all files matching the language. this is 
+			// done with the "unleash" message
+			const suffixesByLangId = new Map<string, Language>();
+			for (const [lang] of supportedLanguages) {
+				suffixesByLangId.set(lang.info.languageId, lang);
+			}
+			const handleTextDocument = async (doc: vscode.TextDocument) => {
+				const lang = suffixesByLangId.get(doc.languageId);
+				if (!lang) {
+					return;
+				}
+				suffixesByLangId.delete(doc.languageId);
+				const langData = await lang.fetchLanguageData();
+				log.appendLine(`[anycode] unleashing '${doc.languageId}'`);
+				const initLang = client.sendRequest(CustomMessages.QueueUnleash, [lang.info, langData]);
+
+				const initCancel = new Promise<void>(resolve => disposables.push(new vscode.Disposable(resolve)));
+				_statusItem.busy = true;
+				_statusItem.text = `$(sync~spin) indexing '${doc.languageId}'...`;
+				currentIndexingPhase = doc.languageId;
+				_activeIndexingCount++;
+				try {
+					_statusBarItem.text = `$(sync~spin) indexing '${doc.languageId}'...`;
+					_statusBarItem.show();
+					await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: `Updating Index for '${doc.languageId}'...` }, (progress) => {
+						_currentProgress = { reporter: progress, lastDone: 0 };
+						return Promise.race([initLang, initCancel]);
+					});
+				} finally {
+					_activeIndexingCount--;
+					if (_activeIndexingCount === 0) {
+						_statusBarItem.hide();
+					}
+					_currentProgress = undefined;
+					currentIndexingPhase = undefined;
+					_updateStatusAndInfo(documentSelector, !hasWorkspaceContents && _isRemoteHubWorkspace());
+				}
+
+				if (suffixesByLangId.size === 0) {
+					listener.dispose();
+				}
+			};
+			const listener = vscode.workspace.onDidOpenTextDocument(handleTextDocument);
+			disposables.push(listener);
+			vscode.workspace.textDocuments.forEach(handleTextDocument);
+		} finally {
+			_activeIndexingCount--;
+			if (_activeIndexingCount === 0) {
+				_statusBarItem.hide();
+			}
+			_currentProgress = undefined;
+			// show status/maybe notifications
+			currentIndexingPhase = undefined;
+			_updateStatusAndInfo(documentSelector, !hasWorkspaceContents && _isRemoteHubWorkspace());
 		}
-
-		const uris = all.slice(0, size);
-		log.appendLine(`[INDEX] using ${uris.length} of ${all.length} files for ${langPattern}`);
-
-		const t1 = performance.now();
-		await client.sendRequest(CustomMessages.QueueInit, uris.map(String));
-		/* __GDPR__
-			"init" : {
-				"numOfFiles" : { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true },
-				"indexSize" : { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true },
-				"hasWorkspaceContents" : { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true },
-				"duration" : { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true }
-			}
-		*/
-		telemetry.logUsage('init', {
-			numOfFiles: all.length, // number of files found
-			indexSize: uris.length, // number of files loaded
-			hasWorkspaceContents, // firehose access?
-			duration: performance.now() - t1,
-		});
-
-		// incremental indexing: per language we wait for the first document to appear
-		// and only then we starting indexing all files matching the language. this is 
-		// done with the "unleash" message
-		const suffixesByLangId = new Map<string, Language>();
-		for (const [lang] of supportedLanguages) {
-			suffixesByLangId.set(lang.info.languageId, lang);
-		}
-		const handleTextDocument = async (doc: vscode.TextDocument) => {
-			const lang = suffixesByLangId.get(doc.languageId);
-			if (!lang) {
-				return;
-			}
-			suffixesByLangId.delete(doc.languageId);
-			const langData = await lang.fetchLanguageData();
-			const initLang = client.sendRequest(CustomMessages.QueueUnleash, [lang.info, langData]);
-
-			const initCancel = new Promise<void>(resolve => disposables.push(new vscode.Disposable(resolve)));
-			vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: `Updating Index for '${doc.languageId}'...` }, () => Promise.race([initLang, initCancel]));
-
-			if (suffixesByLangId.size === 0) {
-				listener.dispose();
-			}
-		};
-		const listener = vscode.workspace.onDidOpenTextDocument(handleTextDocument);
-		disposables.push(listener);
-		vscode.workspace.textDocuments.forEach(handleTextDocument);
-
-		// show status/maybe notifications
-		_updateStatusAndInfo(documentSelector, !hasWorkspaceContents && _isRemoteHubWorkspace());
 	}));
 
 

@@ -11,6 +11,7 @@ export type QueryModule = {
 	outline?: string;
 	comments?: string;
 	folding?: string;
+	highlights?: string;
 	locals?: string;
 	identifiers?: string;
 	references?: string;

@@ -162,19 +162,26 @@ export function isInteresting(uri: string): boolean {
 }
 
 export async function parallel<R>(tasks: ((token: lsp.CancellationToken) => Promise<R>)[], degree: number, token: lsp.CancellationToken): Promise<R[]> {
-	let result: R[] = [];
+	const result: R[] = new Array(tasks.length);
+	const promises: Promise<void>[] = [];
 	let pos = 0;
-	while (true) {
-		if (token.isCancellationRequested) {
-			throw new Error('cancelled');
+
+	async function runNext(): Promise<void> {
+		if (pos >= tasks.length || token.isCancellationRequested) {
+			return;
 		}
-		const partTasks = tasks.slice(pos, pos + degree);
-		if (partTasks.length === 0) {
-			break;
-		}
-		const partResult = await Promise.all(partTasks.map(task => task(token)));
-		pos += degree;
-		result.push(...partResult);
+		const index = pos++;
+		result[index] = await tasks[index](token);
+		return runNext();
+	}
+
+	for (let i = 0; i < Math.min(degree, tasks.length); i++) {
+		promises.push(runNext());
+	}
+
+	await Promise.all(promises);
+	if (token.isCancellationRequested) {
+		throw new Error('cancelled');
 	}
 	return result;
 }
